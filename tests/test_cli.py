@@ -76,8 +76,29 @@ def test_main_reports_invalid_configuration(tmp_path, capsys):
     assert "Error:" in capsys.readouterr().err
 
 
-def test_load_image_rejects_missing_file(tmp_path):
+def test_load_image_rejects_missing_file(tmp_path, monkeypatch):
+    class FakeNumpy:
+        uint8 = "uint8"
+
+        @staticmethod
+        def fromfile(path, dtype):
+            return FakeNumpy()
+
+        size = 0
+
+    monkeypatch.setattr("face_attendance.cli.importlib.import_module", lambda name: FakeNumpy())
+
     with pytest.raises(FaceAttendanceError, match="Unable to read image"):
+        _load_image(tmp_path / "missing.jpg")
+
+
+def test_load_image_reports_missing_vision_dependencies(tmp_path, monkeypatch):
+    def unavailable(name):
+        raise ImportError(name)
+
+    monkeypatch.setattr("face_attendance.cli.importlib.import_module", unavailable)
+
+    with pytest.raises(FaceAttendanceError, match="Vision dependencies are unavailable"):
         _load_image(tmp_path / "missing.jpg")
 
 

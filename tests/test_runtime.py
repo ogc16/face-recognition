@@ -1,10 +1,29 @@
+import pytest
+
 from face_attendance.attendance import AttendanceLog
 from face_attendance.config import AppConfig
 from face_attendance.liveness import CallableLivenessChecker
 from face_attendance.runtime import build_runtime
 
 
-def test_build_runtime_initializes_local_data_files(tmp_path):
+class StubBackend:
+    def encode(self, frame):
+        return [float(len(frame))]
+
+    def distance(self, left, right):
+        return abs(left[0] - right[0])
+
+
+@pytest.fixture
+def stub_backend(monkeypatch):
+    monkeypatch.setattr(
+        "face_attendance.runtime.DefaultFaceRecognitionBackend",
+        StubBackend,
+    )
+    return StubBackend
+
+
+def test_build_runtime_initializes_local_data_files(tmp_path, stub_backend):
     config = AppConfig(
         registry_path=tmp_path / "registry.json",
         attendance_path=tmp_path / "attendance.csv",
@@ -22,7 +41,7 @@ def test_build_runtime_initializes_local_data_files(tmp_path):
     assert runtime.liveness_policy.required is False
 
 
-def test_build_runtime_accepts_a_liveness_checker(tmp_path):
+def test_build_runtime_accepts_a_liveness_checker(tmp_path, stub_backend):
     config = AppConfig(
         registry_path=tmp_path / "registry.json",
         attendance_path=tmp_path / "attendance.csv",
@@ -37,7 +56,7 @@ def test_build_runtime_accepts_a_liveness_checker(tmp_path):
     assert runtime.liveness_policy.checker is checker
 
 
-def test_runtime_attendance_is_ready_for_events(tmp_path):
+def test_runtime_attendance_is_ready_for_events(tmp_path, stub_backend):
     config = AppConfig(
         registry_path=tmp_path / "registry.json",
         attendance_path=tmp_path / "attendance.csv",
@@ -50,3 +69,20 @@ def test_runtime_attendance_is_ready_for_events(tmp_path):
     assert event.name == "Ada"
     assert event.action == "in"
     assert AttendanceLog(config.attendance_path).events() == (event,)
+
+
+def test_build_runtime_reports_missing_model_data(tmp_path, monkeypatch):
+    def unavailable():
+        raise RuntimeError("model data missing")
+
+    monkeypatch.setattr(
+        "face_attendance.runtime.DefaultFaceRecognitionBackend",
+        unavailable,
+    )
+    config = AppConfig(
+        registry_path=tmp_path / "registry.json",
+        attendance_path=tmp_path / "attendance.csv",
+    )
+
+    with pytest.raises(RuntimeError, match="model data missing"):
+        build_runtime(config)
