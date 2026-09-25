@@ -1,9 +1,6 @@
 import importlib
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
-from enum import Enum
-from typing import Any, Protocol
 
 from .errors import (
     DependencyError,
@@ -12,49 +9,61 @@ from .errors import (
     RegistrationError,
     RegistryError,
 )
-from .liveness import LivenessPolicy, LivenessStatus
-from .registry import Embedding, FaceRegistry
+from .liveness import LivenessStatus
+from .protocols import (
+    EmbeddingStore,
+    FaceDistance,
+    FaceEncoder,
+    Frame,
+    LivenessPolicyProtocol,
+)
+from .registry import Embedding
+from .types import RecognitionResult, RecognitionStatus
 from .validation import validate_embedding
 
-
-class RecognitionStatus(str, Enum):
-    MATCH = "match"
-    UNKNOWN = "unknown"
-    NO_FACE = "no_face"
-    MULTIPLE_FACES = "multiple_faces"
-
-
-@dataclass(frozen=True, slots=True)
-class RecognitionResult:
-    status: RecognitionStatus
-    face_count: int
-    name: str | None = None
-    distance: float | None = None
-    confidence: float | None = None
-
-    @property
-    def matched(self) -> bool:
-        return self.status is RecognitionStatus.MATCH and self.name is not None
-
-    @property
-    def match_quality(self) -> float | None:
-        return self.confidence
-
-
-class FaceEncoder(Protocol):
-    def encode(self, frame: Any) -> list[Embedding]: ...
-
-
-class FaceDistance(Protocol):
-    def __call__(self, known: Embedding, candidate: Embedding) -> float: ...
+__all__ = [
+    "DefaultFaceRecognitionBackend",
+    "Embedding",
+    "FaceDistance",
+    "FaceEncoder",
+    "FaceRecognitionBackend",
+    "FaceRecognitionService",
+    "RecognitionResult",
+    "RecognitionStatus",
+]
 
 
 class FaceRecognitionBackend:
-    def encode(self, frame: Any) -> list[Embedding]:
+    """Marker base class for pluggable face encoders.
+
+    Subclasses override :meth:`encode` and :meth:`distance`. This class exists
+    only for documentation value; consumers should depend on
+    :class:`~face_attendance.protocols.FaceEncoder` instead.
+    """
+
+    def encode(self, frame: Frame) -> list[Embedding]:
+        """Return one embedding per face detected in the frame.
+
+        Args:
+            frame: RGB frame to analyze.
+
+        Raises:
+            NotImplementedError: Always, unless overridden.
+        """
         raise NotImplementedError
 
     def distance(self, known: Embedding, candidate: Embedding) -> float:
+        """Return a non-negative distance between two embeddings.
+
+        Args:
+            known: The enrolled embedding.
+            candidate: The observed embedding.
+
+        Raises:
+            NotImplementedError: Always, unless overridden.
+        """
         raise NotImplementedError
+
 
 
 class DefaultFaceRecognitionBackend:
@@ -76,7 +85,7 @@ class DefaultFaceRecognitionBackend:
                 "`python -m pip install -e .`."
             ) from exc
 
-    def encode(self, frame: Any) -> list[Embedding]:
+    def encode(self, frame: Frame) -> list[Embedding]:
         try:
             encodings = self._face_recognition.face_encodings(frame)
             return [validate_embedding(encoding) for encoding in encodings]
@@ -100,7 +109,7 @@ class DefaultFaceRecognitionBackend:
 class FaceRecognitionService:
     def __init__(
         self,
-        registry: FaceRegistry,
+        registry: EmbeddingStore,
         encoder: FaceEncoder,
         distance: FaceDistance | Callable[[Embedding, Embedding], float],
         tolerance: float,
@@ -122,14 +131,14 @@ class FaceRecognitionService:
         self.tolerance = numeric_tolerance
         self.require_single_face = require_single_face
 
-    def _encode(self, frame: Any) -> list[Embedding]:
+    def _encode(self, frame: Frame) -> list[Embedding]:
         try:
             encodings = self.encoder.encode(frame)
             return [validate_embedding(embedding) for embedding in encodings]
         except (RegistryError, TypeError, ValueError) as exc:
             raise RecognitionError("Face encoder returned an invalid embedding") from exc
 
-    def recognize(self, frame: Any) -> RecognitionResult:
+    def recognize(self, frame: Frame) -> RecognitionResult:
         encodings = self._encode(frame)
         face_count = len(encodings)
         if face_count == 0:
@@ -176,20 +185,37 @@ class FaceRecognitionService:
             confidence=confidence,
         )
 
-    def check_liveness(self, frame: Any, liveness_policy: LivenessPolicy) -> None:
-        if not isinstance(liveness_policy, LivenessPolicy):
+    def check_liveness(self, frame: Frame, liveness_policy: LivenessPolicyProtocol) -> None:
+        """Enforce the liveness policy for a frame.
+
+        Args:
+            frame: Frame about to be matched.
+            liveness_policy: Policy governing the liveness requirement. Any
+                object exposing ``evaluate(frame)`` is accepted, so callers may
+                substitute their own policy.
+
+        Raises:
+            LivenessError: If the policy is missing its ``evaluate`` method, if
+                the verdict is not allowed, or if it is a spoof.
+        """
+        evaluate = getattr(liveness_policy, "evaluate", None)
+        if not callable(evaluate):
             raise LivenessError("A liveness policy is required")
-        liveness = liveness_policy.evaluate(frame)
+        liveness = evaluate(frame)
         if not liveness.allowed:
             if liveness.status is LivenessStatus.SPOOF:
                 raise LivenessError("Liveness verification rejected this face")
             raise LivenessError("A configured liveness checker is required")
 
-    def authenticate(self, frame: Any, liveness_policy: LivenessPolicy) -> RecognitionResult:
+    def authenticate(
+        self,
+        frame: Frame,
+        liveness_policy: LivenessPolicyProtocol,
+    ) -> RecognitionResult:
         self.check_liveness(frame, liveness_policy)
         return self.recognize(frame)
 
-    def embedding_for(self, frame: Any) -> Embedding:
+    def embedding_for(self, frame: Frame) -> Embedding:
         encodings = self._encode(frame)
         if len(encodings) == 0:
             raise RegistrationError("No face was detected in the captured image")

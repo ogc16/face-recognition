@@ -3,29 +3,19 @@ import csv
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
-from typing import Literal, cast
+from typing import cast
 
 from .errors import AttendanceError
 from .file_lock import exclusive_file_lock
+from .types import VALID_ACTIONS, AttendanceAction, AttendanceEvent
 from .validation import name_key, normalize_name
 
-AttendanceAction = Literal["in", "out"]
-VALID_ACTIONS = {"in", "out"}
+__all__ = ["VALID_ACTIONS", "AttendanceAction", "AttendanceEvent", "AttendanceLog"]
+
 FileSignature = tuple[int, int, int]
-
-
-@dataclass(frozen=True, slots=True)
-class AttendanceEvent:
-    timestamp: str
-    name: str
-    action: AttendanceAction
-
-    def to_row(self) -> dict[str, str]:
-        return {"timestamp": self.timestamp, "name": self.name, "action": self.action}
 
 
 class AttendanceLog:

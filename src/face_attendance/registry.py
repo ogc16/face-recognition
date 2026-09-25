@@ -2,31 +2,20 @@ import contextlib
 import json
 import os
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
 
 from .errors import RegistryError
 from .file_lock import exclusive_file_lock
+from .types import Embedding, UserRecord
 from .validation import name_key, normalize_name, validate_embedding
 
+__all__ = ["REGISTRY_VERSION", "Embedding", "FaceRegistry", "UserRecord"]
+
 REGISTRY_VERSION = 1
-Embedding = tuple[float, ...]
 FileSignature = tuple[int, int, int]
-
-
-@dataclass(frozen=True, slots=True)
-class UserRecord:
-    name: str
-    embeddings: tuple[Embedding, ...]
-
-    def to_json(self) -> dict[str, object]:
-        return {
-            "name": self.name,
-            "embeddings": [list(embedding) for embedding in self.embeddings],
-        }
 
 
 class FaceRegistry:
@@ -51,7 +40,7 @@ class FaceRegistry:
         except OSError as exc:
             raise RegistryError(f"Unable to access registry: {self.path}") from exc
 
-    def register(self, name: str, embedding: tuple[float, ...] | list[float]) -> bool:
+    def register(self, name: str, embedding: Embedding | Sequence[float]) -> bool:
         normalized_name = normalize_name(name)
         normalized_embedding = validate_embedding(embedding)
         with self._locked():

@@ -1,86 +1,58 @@
 from __future__ import annotations
 
 import contextlib
-import importlib
 import queue
 import tkinter as tk
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from tkinter import messagebox, ttk
-from typing import Any, Protocol
+from typing import Any
 
 from .attendance import AttendanceAction, AttendanceEvent
+from .camera import (
+    CameraFactory,
+    OpenCVCameraFactory,
+    optional_module,
+    require_vision_dependencies,
+)
 from .config import AppConfig
-from .errors import CameraError, DependencyError, FaceAttendanceError
+from .errors import DependencyError, FaceAttendanceError
+from .protocols import FrameSource
 from .recognition import RecognitionResult, RecognitionStatus
 from .runtime import Runtime, build_runtime
 from .validation import normalize_name
 
-
-def _optional_module(name: str) -> Any | None:
-    try:
-        return importlib.import_module(name)
-    except ImportError:
-        return None
+_CV2: Any = None
+_IMAGE: Any = None
+_IMAGE_TK: Any = None
 
 
-_CV2 = _optional_module("cv2")
-_IMAGE = _optional_module("PIL.Image")
-_IMAGE_TK = _optional_module("PIL.ImageTk")
+def _load_gui_dependencies() -> None:
+    """Populate the module-level handles used for image conversion.
 
-
-def _require_vision_dependencies() -> None:
-    if _CV2 is None or _IMAGE is None or _IMAGE_TK is None:
-        raise DependencyError(
-            "GUI dependencies are missing. Install the project with `python -m pip install -e .`."
-        )
-
-
-class Camera(Protocol):
-    def read(self) -> tuple[bool, Any]: ...
-
-    def release(self) -> None: ...
-
-
-class OpenCVCamera:
-    def __init__(self, camera_index: int) -> None:
-        _require_vision_dependencies()
-        cv2 = _CV2
-        if cv2 is None:
-            raise DependencyError("OpenCV is unavailable")
-        self._capture = cv2.VideoCapture(camera_index)
-        if not bool(self._capture.isOpened()):
-            self._capture.release()
-            raise CameraError(f"Unable to open camera {camera_index}")
-
-    def read(self) -> tuple[bool, Any]:
-        cv2 = _CV2
-        if cv2 is None:
-            raise CameraError("OpenCV is unavailable")
-        try:
-            success, frame = self._capture.read()
-            if not success or frame is None:
-                return False, None
-            return True, cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        except Exception as exc:
-            raise CameraError("Unable to read from the camera") from exc
-
-    def release(self) -> None:
-        self._capture.release()
+    Raises:
+        DependencyError: If OpenCV or Pillow cannot be imported.
+    """
+    global _CV2, _IMAGE, _IMAGE_TK
+    _CV2 = optional_module("cv2")
+    _IMAGE = optional_module("PIL.Image")
+    _IMAGE_TK = optional_module("PIL.ImageTk")
+    require_vision_dependencies("cv2", "PIL.Image", "PIL.ImageTk")
 
 
 class FaceAttendanceApp:
     def __init__(
         self,
         runtime: Runtime,
-        camera_factory: Callable[[int], Camera] | None = None,
+        camera_factory: CameraFactory | None = None,
     ) -> None:
         self.runtime = runtime
         self.config = runtime.config
         self.root = tk.Tk()
         try:
-            _require_vision_dependencies()
-            self.camera = (camera_factory or OpenCVCamera)(self.config.camera_index)
+            _load_gui_dependencies()
+            factory = camera_factory or OpenCVCameraFactory()
+            self.camera: FrameSource = factory.create(self.config.camera_index)
         except Exception:
             self.root.destroy()
             raise
