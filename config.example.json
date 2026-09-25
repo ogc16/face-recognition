@@ -1,0 +1,10 @@
+{
+  "camera_index": 0,
+  "registry_path": "data/registry.json",
+  "attendance_path": "data/attendance.csv",
+  "tolerance": 0.6,
+  "require_liveness": false,
+  "max_embeddings_per_user": 5,
+  "window_width": 1200,
+  "window_height": 720
+}

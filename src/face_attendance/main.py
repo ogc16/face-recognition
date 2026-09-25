@@ -2,12 +2,8 @@ import argparse
 import sys
 from pathlib import Path
 
-_SRC = Path(__file__).resolve().parent / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
-
-from face_attendance.config import AppConfig
-from face_attendance.errors import FaceAttendanceError
+from .config import AppConfig
+from .errors import FaceAttendanceError
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -15,7 +11,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, help="Path to a JSON configuration file")
     arguments = parser.parse_args(argv)
     try:
-        from face_attendance.gui import run_gui
+        from .gui import run_gui
 
         run_gui(AppConfig.from_file(arguments.config))
     except (FaceAttendanceError, ImportError, OSError, ValueError) as exc:
