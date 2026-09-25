@@ -93,6 +93,12 @@ Environment variables override values from the configuration file:
 | Require liveness | `FACE_ATTENDANCE_REQUIRE_LIVENESS` |
 | Samples per user | `FACE_ATTENDANCE_MAX_EMBEDDINGS` |
 | Window size | `FACE_ATTENDANCE_WINDOW_WIDTH`, `FACE_ATTENDANCE_WINDOW_HEIGHT` |
+| Storage backend | `FACE_ATTENDANCE_STORAGE_BACKEND` |
+| PostgreSQL DSNs | `FACE_ATTENDANCE_POSTGRES_DSN`, `FACE_ATTENDANCE_POSTGRES_ATTENDANCE_DSN` |
+| Registry cipher | `FACE_ATTENDANCE_REGISTRY_CIPHER` |
+| Registry key | `FACE_ATTENDANCE_REGISTRY_KEY` |
+
+The registry key is read from the environment only. It is deliberately absent from the table of settings that map onto `config.json`, because a key written into a config file would sit in version control next to the ciphertext it protects.
 
 Unknown `FACE_ATTENDANCE_*` variables and unknown JSON keys are rejected so misspelled security settings cannot silently fall back to defaults. The default tolerance is `0.6`. Lower values are stricter and can reject valid matches; higher values increase false accepts. Register several samples per user when lighting or angles vary. Liveness is required by default; set `require_liveness` to `false` only on a controlled, trusted workstation where that trade-off is understood.
 
@@ -102,6 +108,53 @@ The default data paths are relative to the current working directory:
 - `data/attendance.csv`
 
 For a sensitive deployment, configure absolute paths on an access-controlled local disk rather than a repository, synchronized folder, or removable drive.
+
+### Storage backends
+
+`storage_backend` selects where embeddings and attendance records are kept. Every backend loads and stores the same normalized records, so switching between them does not change matching behaviour.
+
+| Value | Embeddings | Attendance | Extra dependency |
+| --- | --- | --- | --- |
+| `json` (default) | `registry.json` | `attendance.csv` | none |
+| `sqlite` | SQLite database | SQLite database | none |
+| `postgres` | `postgres_dsn` | `postgres_dsn`, or `postgres_attendance_dsn` | `pip install -e ".[postgres]"` |
+
+Both `json` and `csv` remain valid aliases of the default backend, so existing configurations keep working. A SQLite deployment gives you atomic writes and a queryable store without installing anything; point `registry_path` and `attendance_path` at separate files, or at the same file to keep both in one database.
+
+`postgres_dsn` may contain a password, so supply it through `FACE_ATTENDANCE_POSTGRES_DSN` or the environment rather than a committed file. DSNs are never echoed back in error messages.
+
+### Registry encryption
+
+The face registry stores biometric embeddings. `registry_cipher` encrypts that file at rest; it defaults to `none`, so existing plaintext registries are unaffected until you opt in.
+
+| Value | Algorithm | Notes |
+| --- | --- | --- |
+| `none` (default) | none | Plaintext JSON, as before |
+| `fernet` | AES-128-CBC with HMAC-SHA256 | Timestamped tokens, authenticated |
+| `aes-gcm` | AES-256-GCM | Fresh 96-bit nonce per write |
+
+Install the extra first:
+
+```text
+python -m pip install -e ".[crypto]"
+```
+
+Then generate a key and export it:
+
+```text
+python -c "from face_attendance.crypto import generate_key; print(generate_key('aes-gcm'))"
+set FACE_ATTENDANCE_REGISTRY_KEY=<paste the generated value>
+```
+
+The key must be at least 32 characters. Generated keys satisfy that automatically; a short passphrase is refused rather than silently stretched, because a single hash pass is fast enough to brute force offline.
+
+An encrypted registry is written as an envelope of `{"version": 1, "encrypted": "<cipher>", "nonce": ..., "payload": ...}`. Reading one enforces three rules:
+
+- A configured cipher will not silently read a plaintext file, and a plaintext reader will not read an encrypted one. A misconfiguration fails instead of quietly doing nothing.
+- A wrong key raises rather than returning partial data.
+- Any modification to the stored bytes is detected when the file is read.
+
+There is no key rotation or migration path yet: to change ciphers, read the registry with the old key, write it to a new path with the new key, then remove the old file. Keep the original until the new one is confirmed readable.
 
 ## Desktop workflow
 

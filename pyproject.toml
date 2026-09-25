@@ -53,6 +53,9 @@ dev = [
 postgres = [
     "psycopg[binary]>=3.1",
 ]
+crypto = [
+    "cryptography>=42",
+]
 
 [project.scripts]
 face-attendance = "face_attendance.cli:main"

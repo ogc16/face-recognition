@@ -29,6 +29,7 @@ from pathlib import Path
 
 from ..attendance import AttendanceLog
 from ..config import STORAGE_BACKENDS, AppConfig
+from ..crypto import PlaintextCipher, build_cipher
 from ..errors import ConfigurationError
 from ..protocols import AttendanceStore, EmbeddingStore
 from ..registry import FaceRegistry
@@ -56,6 +57,7 @@ class StorageFactory(ABC):
         self,
         path: str | Path,
         max_embeddings_per_user: int = 5,
+        config: AppConfig | None = None,
     ) -> EmbeddingStore:
         """Create the embedding store for this deployment.
 
@@ -83,14 +85,21 @@ class StorageFactory(ABC):
 
 
 class _JsonFactory(StorageFactory):
-    """Serves the file-backed defaults used by the bundled config."""
+    """Serves the file-backed defaults used by the bundled config.
+
+    The cipher only applies to this backend: SQLite and PostgreSQL store
+    embeddings in their own column types, so confidentiality there depends on
+    the database's own encryption at rest.
+    """
 
     def create_embedding_store(
         self,
         path: str | Path,
         max_embeddings_per_user: int = 5,
+        config: AppConfig | None = None,
     ) -> EmbeddingStore:
-        return FaceRegistry(path, max_embeddings_per_user=max_embeddings_per_user)
+        cipher = build_cipher(config.registry_cipher) if config is not None else PlaintextCipher()
+        return FaceRegistry(path, max_embeddings_per_user=max_embeddings_per_user, cipher=cipher)
 
     def create_attendance_store(self, path: str | Path) -> AttendanceStore:
         return AttendanceLog(path)
@@ -103,6 +112,7 @@ class _SqliteFactory(StorageFactory):
         self,
         path: str | Path,
         max_embeddings_per_user: int = 5,
+        config: AppConfig | None = None,
     ) -> EmbeddingStore:
         return SqliteEmbeddingStore(path, max_embeddings_per_user=max_embeddings_per_user)
 
@@ -117,6 +127,7 @@ class _PostgresFactory(StorageFactory):
         self,
         path: str | Path,
         max_embeddings_per_user: int = 5,
+        config: AppConfig | None = None,
     ) -> EmbeddingStore:
         return PostgresEmbeddingStore(str(path), max_embeddings_per_user=max_embeddings_per_user)
 
@@ -194,7 +205,7 @@ def create_embedding_store(
         )
     target = config.registry_path if path is None else path
     return resolve_factory(config.storage_backend).create_embedding_store(
-        target, max_embeddings_per_user
+        target, max_embeddings_per_user, config
     )
 
 

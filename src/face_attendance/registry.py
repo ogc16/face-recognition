@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from threading import RLock
 
+from .crypto import PlaintextCipher, RegistryCipher
 from .errors import RegistryError
 from .file_lock import exclusive_file_lock
 from .types import Embedding, UserRecord
@@ -19,7 +20,25 @@ FileSignature = tuple[int, int, int]
 
 
 class FaceRegistry:
-    def __init__(self, path: str | Path, max_embeddings_per_user: int = 5) -> None:
+    """The bundled JSON registry, optionally encrypted at rest.
+
+    Args:
+        path: Location of the registry file.
+        max_embeddings_per_user: Maximum samples retained per identity.
+        cipher: The at-rest cipher. Defaults to plaintext, which keeps the
+            on-disk format identical to previous versions.
+
+    Raises:
+        RegistryError: If ``max_embeddings_per_user`` is not a positive
+            integer, or the cipher cannot be constructed.
+    """
+
+    def __init__(
+        self,
+        path: str | Path,
+        max_embeddings_per_user: int = 5,
+        cipher: RegistryCipher | None = None,
+    ) -> None:
         if isinstance(max_embeddings_per_user, bool) or not isinstance(
             max_embeddings_per_user, int
         ):
@@ -28,6 +47,7 @@ class FaceRegistry:
             raise RegistryError("At least one embedding per user is required")
         self.path = Path(path)
         self.max_embeddings_per_user = max_embeddings_per_user
+        self._cipher = PlaintextCipher() if cipher is None else cipher
         self._lock = RLock()
         self._cached_users: dict[str, UserRecord] | None = None
         self._cached_signature: FileSignature | None = None
@@ -130,9 +150,72 @@ class FaceRegistry:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise RegistryError(f"Unable to read registry: {self.path}") from exc
-        version = payload.get("version") if isinstance(payload, dict) else None
+        if not isinstance(payload, dict):
+            raise RegistryError("Unsupported registry format")
+        version = payload.get("version")
         if type(version) is not int or version != REGISTRY_VERSION:
             raise RegistryError("Unsupported registry format")
+        if "encrypted" in payload:
+            users = self._read_encrypted(payload)
+        else:
+            if self._cipher.name is not None:
+                raise RegistryError(
+                    f"Registry is not encrypted, but cipher {self._cipher.name!r} is "
+                    "configured. Set registry_cipher to 'none' to use this file, or "
+                    "re-enrol the identities to create an encrypted registry."
+                )
+            users = self._decode_users(payload)
+        return users
+
+    def _read_encrypted(self, payload: dict[str, object]) -> dict[str, UserRecord]:
+        """Decrypt an encrypted registry envelope and decode its payload.
+
+        Args:
+            payload: The full stored document.
+
+        Returns:
+            The decoded user records.
+
+        Raises:
+            RegistryError: If the envelope names an unexpected cipher, the
+                cipher is unavailable, or decryption fails.
+        """
+        algorithm = payload.get("encrypted")
+        if algorithm != self._cipher.name:
+            expected = self._cipher.name or "an unencrypted registry"
+            raise RegistryError(
+                f"Registry was written with {algorithm!r} but this deployment expects {expected}"
+            )
+        allowed = {"version", "encrypted", "nonce", "payload"}
+        if not set(payload) <= allowed:
+            raise RegistryError("Registry contains unsupported fields")
+        if self._cipher.name is None:
+            raise RegistryError("Registry is encrypted but no cipher is configured")
+        envelope = {
+            key: value for key, value in payload.items() if key not in {"version", "encrypted"}
+        }
+        plaintext = self._cipher.decrypt(envelope)
+        try:
+            inner = json.loads(plaintext)
+        except json.JSONDecodeError as exc:
+            raise RegistryError("Decrypted registry is not valid JSON") from exc
+        if not isinstance(inner, dict):
+            raise RegistryError("Unsupported registry format")
+        return self._decode_users(inner)
+
+    def _decode_users(self, payload: dict[str, object]) -> dict[str, UserRecord]:
+        """Validate a plaintext registry document and return its records.
+
+        Args:
+            payload: The document, carrying ``version`` and ``users``.
+
+        Returns:
+            The decoded user records, keyed by case-folded name.
+
+        Raises:
+            RegistryError: If the document is structurally invalid or violates
+                a registry invariant.
+        """
         if set(payload) != {"version", "users"}:
             raise RegistryError("Registry contains unsupported fields")
         raw_users = payload.get("users")
@@ -177,10 +260,31 @@ class FaceRegistry:
         return (stat.st_mtime_ns, stat.st_size, getattr(stat, "st_ino", 0))
 
     def _save(self, users: dict[str, UserRecord]) -> None:
-        payload = {
+        document = {
             "version": REGISTRY_VERSION,
             "users": [users[name].to_json() for name in sorted(users)],
         }
+        if self._cipher.name is None:
+            text = json.dumps(
+                document,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            )
+        else:
+            plaintext = json.dumps(
+                document,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            )
+            envelope = self._cipher.encrypt(plaintext)
+            text = json.dumps(
+                {"version": REGISTRY_VERSION, "encrypted": self._cipher.name, **envelope},
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            )
         temporary_path: str | None = None
         descriptor: int | None = None
         try:
@@ -193,13 +297,7 @@ class FaceRegistry:
             file_handle = os.fdopen(descriptor, "w", encoding="utf-8", newline="\n")
             descriptor = None
             with file_handle:
-                json.dump(
-                    payload,
-                    file_handle,
-                    ensure_ascii=False,
-                    allow_nan=False,
-                    separators=(",", ":"),
-                )
+                file_handle.write(text)
                 file_handle.write("\n")
                 file_handle.flush()
                 os.fsync(file_handle.fileno())

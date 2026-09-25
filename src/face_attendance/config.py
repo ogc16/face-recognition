@@ -19,9 +19,11 @@ ENVIRONMENT_KEYS = {
     "window_height": "FACE_ATTENDANCE_WINDOW_HEIGHT",
     "storage_backend": "FACE_ATTENDANCE_STORAGE_BACKEND",
     "postgres_dsn": "FACE_ATTENDANCE_POSTGRES_DSN",
+    "registry_cipher": "FACE_ATTENDANCE_REGISTRY_CIPHER",
 }
 
 STORAGE_BACKENDS = ("json", "csv", "sqlite", "postgres")
+REGISTRY_CIPHERS = ("none", "fernet", "aes-gcm")
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +38,7 @@ class AppConfig:
     window_height: int = 720
     storage_backend: str = "json"
     postgres_dsn: str | None = None
+    registry_cipher: str = "none"
 
     def __post_init__(self) -> None:
         _validate_integer("camera_index", self.camera_index, minimum=0)
@@ -54,6 +57,9 @@ class AppConfig:
         _validate_storage_backend(self.storage_backend)
         if self.storage_backend == "postgres" and not self.postgres_dsn:
             raise ConfigurationError("postgres_dsn is required when storage_backend is 'postgres'")
+        if not isinstance(self.registry_cipher, str):
+            raise ConfigurationError("registry_cipher must be a string")
+        _validate_choice(self.registry_cipher, "registry_cipher", REGISTRY_CIPHERS)
 
     @classmethod
     def from_file(
@@ -142,6 +148,11 @@ class AppConfig:
                 "storage_backend",
                 STORAGE_BACKENDS,
             ),
+            registry_cipher=_parse_choice(
+                get_value("registry_cipher", defaults.registry_cipher),
+                "registry_cipher",
+                REGISTRY_CIPHERS,
+            ),
             postgres_dsn=_parse_optional_string(
                 get_value("postgres_dsn", defaults.postgres_dsn), "postgres_dsn"
             ),
@@ -173,6 +184,27 @@ def _validate_storage_backend(value: str) -> str:
     if normalized not in STORAGE_BACKENDS:
         supported = ", ".join(STORAGE_BACKENDS)
         raise ConfigurationError(f"storage_backend must be one of: {supported}")
+    return normalized
+
+
+def _validate_choice(value: str, name: str, allowed: tuple[str, ...]) -> str:
+    """Return the normalized value, or raise if it is not allowed.
+
+    Args:
+        value: The configured value.
+        name: The configuration key, used in the error message.
+        allowed: The permitted values.
+
+    Returns:
+        The lowercased, stripped value.
+
+    Raises:
+        ConfigurationError: If the value is not permitted.
+    """
+    normalized = value.strip().lower()
+    if normalized not in allowed:
+        supported = ", ".join(allowed)
+        raise ConfigurationError(f"{name} must be one of: {supported}")
     return normalized
 
 

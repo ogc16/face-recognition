@@ -37,6 +37,26 @@ jobs:
       - name: Compile
         run: python -m compileall -q src main.py util.py
 
+  optional-deps:
+    name: Optional dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install the package with every extra
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,crypto]"
+          python -m pip install "numpy>=2"
+      - name: Test
+        run: python -m pytest --cov=face_attendance --cov-report=term-missing
+      - name: Lint
+        run: |
+          python -m ruff check .
+          python -m ruff format --check .
+
   typecheck:
     name: Type check
     runs-on: ubuntu-latest
