@@ -70,7 +70,7 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 
 [tool.coverage.report]
-fail_under = 60
+fail_under = 90
 
 [tool.ruff]
 line-length = 100
