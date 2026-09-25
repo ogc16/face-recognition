@@ -2,6 +2,15 @@
 
 A local face recognition attendance system with a Tkinter desktop app and a scriptable CLI. It stores face embeddings rather than camera images, keeps the core logic testable without a display, and supports configurable liveness integration.
 
+[![CI](https://github.com/ogc16/face-recognition/actions/workflows/ci.yml/badge.svg)](https://github.com/ogc16/face-recognition/actions/workflows/ci.yml)
+
+## Project governance
+
+- [MIT License](LICENSE)
+- [Security policy](SECURITY.md)
+- [Contributing guide](CONTRIBUTING.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
+
 ## What is included
 
 - Live webcam capture with a configurable camera index
@@ -23,6 +32,18 @@ A local face recognition attendance system with a Tkinter desktop app and a scri
 - The project pins the `setuptools` runtime required by `face_recognition_models`
 
 Model data is supplied by the `face-recognition-models` dependency rather than this repository. Camera and model behavior must be verified on the deployment machine.
+
+## Dependency map
+
+The canonical dependency declaration is the root [`pyproject.toml`](pyproject.toml). The project does not bundle model weights or a labeled face dataset, and it does not require a GPU framework such as PyTorch or an additional vector database such as FAISS for its default single-process design.
+
+| Area | Dependencies | Purpose |
+| --- | --- | --- |
+| Face detection and encoding | `face-recognition`, `face-recognition-models`, `opencv-python`, `numpy`, `Pillow` | 128-dimensional face embeddings, model assets, camera frames, and array/image operations |
+| Native model runtime | `dlib` (transitive dependency of `face-recognition`), `setuptools` | Face-landmark and embedding model runtime |
+| Development | `pytest`, `pytest-cov`, `ruff`, `mypy` | Tests, coverage, linting, formatting, and static typing |
+
+`dlib` may require Visual Studio Build Tools and CMake on Windows when no compatible wheel is available. Keep the runtime and development dependency sets in `pyproject.toml` rather than maintaining a second, drifting requirements file.
 
 ## Setup
 
@@ -142,22 +163,172 @@ The repository also runs these core checks on Ubuntu and Windows through GitHub 
 
 ## Architecture
 
+The application separates entry points, policy, vision integration, and durable
+storage so the core can be tested without a camera or display:
+
 ```text
 main.py
-└── face_attendance
-    ├── config.py          # JSON/environment configuration
-    ├── registry.py        # Versioned JSON embedding store
-    ├── file_lock.py       # Cross-process data-file locking
-    ├── recognition.py     # Face matching and policy enforcement
-    ├── attendance.py      # CSV event log and state transitions
-    ├── liveness.py        # Pluggable liveness policy
-    ├── gui.py             # Tkinter desktop workflow
-    ├── cli.py             # Scriptable commands
-    ├── runtime.py         # Dependency assembly
-    └── validation.py      # Names and embedding validation
+├── face_attendance
+│   ├── config.py          # JSON/environment configuration
+│   ├── registry.py        # Versioned JSON embedding store
+│   ├── file_lock.py       # Cross-process data-file locking
+│   ├── recognition.py     # Face matching and policy enforcement
+│   ├── attendance.py      # CSV event log and state transitions
+│   ├── liveness.py        # Pluggable liveness policy
+│   ├── gui.py             # Tkinter desktop workflow
+│   ├── cli.py             # Scriptable commands
+│   ├── runtime.py         # Dependency assembly
+│   └── validation.py      # Names and embedding validation
+├── tests/                 # Fake-backend unit and integration tests
+├── .github/workflows/     # Cross-platform CI
+├── LICENSE
+├── SECURITY.md
+├── CONTRIBUTING.md
+└── CODE_OF_CONDUCT.md
 ```
 
-The GUI performs recognition and attendance work in a worker, but only the Tk main thread updates widgets. The registry and attendance writer serialize access across processes, write durable temporary or appended data, and use atomic replacement where applicable.
+### Core class diagram
+
+```mermaid
+classDiagram
+    class AppConfig {
+        +camera_index
+        +registry_path
+        +attendance_path
+        +tolerance
+        +require_liveness
+    }
+    class Runtime {
+        +config
+        +registry
+        +attendance
+        +service
+        +liveness_policy
+    }
+    class FaceRegistry {
+        +register(name, embedding)
+        +records()
+        +remove(name)
+        +names()
+    }
+    class FaceRecognitionService {
+        +authenticate(frame, policy)
+        +recognize(frame)
+        +embedding_for(frame)
+    }
+    class FaceRecognitionBackend {
+        <<interface>>
+        +encode(frame)
+        +distance(known, candidate)
+    }
+    class LivenessPolicy {
+        +evaluate(frame)
+    }
+    class LivenessChecker {
+        <<interface>>
+        +is_live(frame)
+    }
+    class AttendanceLog {
+        +record(name, action)
+        +events()
+        +latest_action(name)
+    }
+
+    Runtime *-- AppConfig
+    Runtime *-- FaceRegistry
+    Runtime *-- AttendanceLog
+    Runtime *-- FaceRecognitionService
+    Runtime *-- LivenessPolicy
+    FaceRecognitionService --> FaceRecognitionBackend
+    FaceRecognitionService --> FaceRegistry
+    FaceRecognitionService --> AttendanceLog
+    FaceRecognitionService --> LivenessPolicy
+    LivenessPolicy --> LivenessChecker
+```
+
+### Authentication flow
+
+```mermaid
+sequenceDiagram
+    actor Operator
+    participant GUI as FaceAttendanceApp
+    participant Service as FaceRecognitionService
+    participant Liveness as LivenessPolicy
+    participant Registry as FaceRegistry
+    participant Attendance as AttendanceLog
+
+    Operator->>GUI: Choose Sign in or Sign out
+    GUI->>Service: authenticate(frame, liveness_policy)
+    Service->>Liveness: evaluate(frame)
+    alt Live or liveness is explicitly not required
+        Liveness-->>Service: allowed
+        Service->>Registry: read records and embeddings
+        Registry-->>Service: candidates
+        Service-->>GUI: RecognitionResult
+        GUI->>Attendance: record(name, action)
+        Attendance-->>GUI: durable CSV event
+    else Spoof, checker error, or missing required checker
+        Liveness-->>Service: rejected
+        Service-->>GUI: LivenessError
+    end
+```
+
+### Data flow and durability
+
+1. `AppConfig` combines JSON settings with environment overrides and rejects
+   unknown keys.
+2. `Runtime` assembles the registry, attendance log, recognition service, and
+   liveness policy.
+3. The GUI or CLI supplies a frame to the recognition service. The service
+   evaluates liveness before matching, and the default policy fails closed when
+   a required checker is missing.
+4. A successful match is written to the append-only CSV log. Sign-in and
+   sign-out transitions are validated under a cross-process file lock.
+5. Registry updates are validated and atomically replaced; camera frames are not
+   persisted by this application.
+
+The GUI performs recognition and attendance work in a worker, but only the Tk
+main thread updates widgets. The CLI uses the same services without requiring a
+display. `doctor` validates both data files without importing the vision model.
+
+## Accuracy and benchmarks
+
+This repository does not include a consented, labeled face dataset or model
+weights, so it does not claim a universal recognition accuracy, false-accept
+rate, or false-reject rate. Those values depend on the camera, lighting,
+demographics, enrollment quality, and the upstream face-recognition model.
+
+Use the following process to produce deployment-specific measurements:
+
+1. Collect a consented evaluation set with genuine and, where appropriate,
+   presentation-attack samples.
+2. Fix the camera, lighting, enrollment procedure, and distance tolerance before
+   measuring results.
+3. Report false accepts, false rejects, and confidence distributions separately
+   for each relevant group and attack type.
+4. Re-run the measurement after changing the model, tolerance, or liveness
+   policy.
+
+The default distance tolerance is `0.6`. It is a starting configuration value,
+not an accuracy guarantee. Lower values are stricter; higher values increase
+false accepts. Liveness checking is fail-closed by default, but the repository
+does not bundle an anti-spoof model, so a high-assurance deployment must supply
+and validate its own `LivenessChecker`.
+
+The current automated suite contains 70 tests and can be measured with:
+
+```text
+python -m pytest --cov=face_attendance --cov-report=term-missing
+```
+
+A local attendance-write measurement on the development machine recorded
+approximately `3.878 s` for 100 events and `56.214 s` for 1000 events. This
+number is hardware- and storage-dependent; it measures durable CSV writes, not
+face-recognition accuracy.
+
+## License
+
+This project is released under the [MIT License](LICENSE).
 
 ## Troubleshooting
 
