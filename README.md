@@ -326,7 +326,7 @@ false accepts. Liveness checking is fail-closed by default, but the repository
 does not bundle an anti-spoof model, so a high-assurance deployment must supply
 and validate its own `LivenessChecker`.
 
-The current automated suite contains 78 tests and can be measured with:
+The current automated suite contains 80 tests and can be measured with:
 
 ```text
 python -m pytest --cov=face_attendance --cov-report=term-missing
