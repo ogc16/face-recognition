@@ -45,7 +45,12 @@ python -m ruff check .
 python -m ruff format --check .
 python -m mypy
 python -m compileall -q src main.py util.py
+python -m build --sdist --wheel --outdir dist
 ```
+
+Performance changes should include a reproducible run of
+`python benchmarks/benchmark_attendance.py --events 1000 --users 8` and should
+compare results on the same machine.
 
 Run the formatter before re-running the format check:
 

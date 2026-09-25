@@ -10,6 +10,9 @@ A local face recognition attendance system with a Tkinter desktop app and a scri
 - [Security policy](SECURITY.md)
 - [Contributing guide](CONTRIBUTING.md)
 - [Code of conduct](CODE_OF_CONDUCT.md)
+- [Threat model](docs/THREAT_MODEL.md)
+- [Scaling the matcher](docs/SCALING.md)
+- [Changelog](CHANGELOG.md)
 
 ## What is included
 
@@ -22,6 +25,8 @@ A local face recognition attendance system with a Tkinter desktop app and a scri
 - Optional pluggable liveness checking with a fail-closed required mode
 - CLI commands for initialization/validation, registration, recognition, user listing/removal, and attendance output
 - Dependency-injected core services covered by unit tests
+- Reproducible synthetic storage benchmarks with machine-readable output
+- Cross-platform CI, package builds, dependency updates, and structured issue/PR templates
 
 ## Requirements
 
@@ -180,7 +185,13 @@ main.py
 │   ├── runtime.py         # Dependency assembly
 │   └── validation.py      # Names and embedding validation
 ├── tests/                 # Fake-backend unit and integration tests
-├── .github/workflows/     # Cross-platform CI
+├── benchmarks/            # Synthetic storage throughput benchmarks
+├── docs/                  # Threat model and scaling guidance
+├── .github/
+│   ├── ISSUE_TEMPLATE/    # Bug and feature reports
+│   ├── workflows/ci.yml   # Cross-platform CI and package build
+│   └── dependabot.yml    # Dependency update automation
+├── CHANGELOG.md
 ├── LICENSE
 ├── SECURITY.md
 ├── CONTRIBUTING.md
@@ -315,16 +326,24 @@ false accepts. Liveness checking is fail-closed by default, but the repository
 does not bundle an anti-spoof model, so a high-assurance deployment must supply
 and validate its own `LivenessChecker`.
 
-The current automated suite contains 70 tests and can be measured with:
+The current automated suite contains 78 tests and can be measured with:
 
 ```text
 python -m pytest --cov=face_attendance --cov-report=term-missing
 ```
 
-A local attendance-write measurement on the development machine recorded
-approximately `3.878 s` for 100 events and `56.214 s` for 1000 events. This
-number is hardware- and storage-dependent; it measures durable CSV writes, not
-face-recognition accuracy.
+Storage throughput has a reproducible synthetic benchmark that uses temporary
+files and never loads face models or reads production data:
+
+```text
+python benchmarks/benchmark_attendance.py --events 1000 --users 8
+```
+
+The benchmark reports registry-write time, durable attendance-write time, and
+events per second as JSON. Results depend on the CPU, filesystem, and antivirus
+configuration; they measure persistence throughput, not face-recognition
+accuracy. See [`benchmarks/README.md`](benchmarks/README.md) for the
+methodology.
 
 ## License
 

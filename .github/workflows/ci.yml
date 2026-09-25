@@ -4,6 +4,13 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   core:
     strategy:
@@ -12,8 +19,8 @@ jobs:
         python-version: ["3.10", "3.12"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install core test tools
@@ -31,3 +38,23 @@ jobs:
         run: python -m mypy
       - name: Compile
         run: python -m compileall -q src main.py util.py
+
+  package:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "build>=1.2,<2"
+      - name: Build sdist and wheel
+        run: python -m build --sdist --wheel --outdir dist
+      - name: Upload distributions
+        uses: actions/upload-artifact@v7
+        with:
+          name: distributions
+          path: dist/*
