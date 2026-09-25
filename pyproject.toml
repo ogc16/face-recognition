@@ -39,7 +39,7 @@ dependencies = [
     "numpy>=1.24,<3",
     "opencv-python>=4.8,<5",
     "Pillow>=10,<13",
-    "setuptools>=68,<81",
+    "setuptools>=68,<85",
 ]
 
 [project.optional-dependencies]
