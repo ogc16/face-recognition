@@ -1,3 +1,4 @@
+import contextlib
 import csv
 import os
 from collections.abc import Iterator
@@ -10,10 +11,11 @@ from typing import Literal, cast
 
 from .errors import AttendanceError
 from .file_lock import exclusive_file_lock
-from .validation import normalize_name
+from .validation import name_key, normalize_name
 
 AttendanceAction = Literal["in", "out"]
 VALID_ACTIONS = {"in", "out"}
+FileSignature = tuple[int, int, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +32,9 @@ class AttendanceLog:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self._lock = RLock()
+        self._cached_events: list[AttendanceEvent] | None = None
+        self._cached_actions: dict[str, AttendanceAction] | None = None
+        self._cached_signature: FileSignature | None = None
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
@@ -43,13 +48,18 @@ class AttendanceLog:
         with self._locked():
             self.path.parent.mkdir(parents=True, exist_ok=True)
             if self.path.exists():
-                self._read_events_unlocked()
+                self._events_snapshot_unlocked()
                 return
             with self.path.open("x", encoding="utf-8", newline="") as handle:
                 writer = csv.DictWriter(handle, fieldnames=["timestamp", "name", "action"])
                 writer.writeheader()
                 handle.flush()
                 os.fsync(handle.fileno())
+            with contextlib.suppress(OSError):
+                os.chmod(self.path, 0o600)
+            self._cached_events = []
+            self._cached_actions = {}
+            self._cached_signature = self._file_signature_unlocked()
 
     def record(
         self,
@@ -58,7 +68,7 @@ class AttendanceLog:
         timestamp: datetime | None = None,
     ) -> AttendanceEvent:
         normalized_name = normalize_name(name)
-        if action not in VALID_ACTIONS:
+        if not isinstance(action, str) or action not in VALID_ACTIONS:
             raise AttendanceError("Attendance action must be 'in' or 'out'")
         if timestamp is not None and not isinstance(timestamp, datetime):
             raise AttendanceError("Attendance timestamp must be a datetime")
@@ -72,7 +82,9 @@ class AttendanceLog:
         )
         with self._locked():
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            previous_action = self._latest_action_unlocked(normalized_name)
+            events = self._events_snapshot_unlocked()
+            assert self._cached_actions is not None
+            previous_action = self._cached_actions.get(name_key(normalized_name))
             if action == "in" and previous_action == "in":
                 raise AttendanceError(f"{normalized_name} is already signed in")
             if action == "out" and previous_action != "in":
@@ -86,11 +98,26 @@ class AttendanceLog:
                 writer.writerow(event.to_row())
                 handle.flush()
                 os.fsync(handle.fileno())
+            with contextlib.suppress(OSError):
+                os.chmod(self.path, 0o600)
+            events.append(event)
+            self._cached_actions[name_key(event.name)] = event.action
+            self._cached_signature = self._file_signature_unlocked()
         return event
 
     def events(self) -> tuple[AttendanceEvent, ...]:
         with self._locked():
-            return self._read_events_unlocked()
+            return tuple(self._events_snapshot_unlocked())
+
+    def _events_snapshot_unlocked(self) -> list[AttendanceEvent]:
+        signature = self._file_signature_unlocked()
+        if self._cached_events is not None and signature == self._cached_signature:
+            return self._cached_events
+        events = list(self._read_events_unlocked())
+        self._cached_events = events
+        self._cached_actions = self._build_actions(events)
+        self._cached_signature = signature
+        return events
 
     def _read_events_unlocked(self) -> tuple[AttendanceEvent, ...]:
         if not self.path.exists():
@@ -135,13 +162,31 @@ class AttendanceLog:
             raise AttendanceError("Attendance log timestamp must include a timezone")
         return parsed.astimezone(timezone.utc).isoformat()
 
-    def _latest_action_unlocked(self, name: str) -> AttendanceAction | None:
-        for event in reversed(self._read_events_unlocked()):
-            if event.name == name:
-                return event.action
-        return None
+    def _file_signature_unlocked(self) -> FileSignature | None:
+        try:
+            stat = self.path.stat()
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise AttendanceError(f"Unable to inspect attendance log: {self.path}") from exc
+        return (stat.st_mtime_ns, stat.st_size, getattr(stat, "st_ino", 0))
+
+    @staticmethod
+    def _build_actions(events: list[AttendanceEvent]) -> dict[str, AttendanceAction]:
+        actions: dict[str, AttendanceAction] = {}
+        for event in events:
+            key = name_key(event.name)
+            previous = actions.get(key)
+            if event.action == "in" and previous == "in":
+                raise AttendanceError(f"Invalid attendance transition for {event.name}")
+            if event.action == "out" and previous != "in":
+                raise AttendanceError(f"Invalid attendance transition for {event.name}")
+            actions[key] = event.action
+        return actions
 
     def latest_action(self, name: str) -> AttendanceAction | None:
         normalized_name = normalize_name(name)
-        matching = [event for event in self.events() if event.name == normalized_name]
-        return matching[-1].action if matching else None
+        with self._locked():
+            self._events_snapshot_unlocked()
+            assert self._cached_actions is not None
+            return self._cached_actions.get(name_key(normalized_name))

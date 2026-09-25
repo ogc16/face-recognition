@@ -9,7 +9,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-from face_attendance.liveness import LivenessPolicy
+from face_attendance.liveness import LivenessChecker, LivenessPolicy
 from face_attendance.recognition import (
     DefaultFaceRecognitionBackend,
     FaceRecognitionService,
@@ -70,13 +70,23 @@ def _to_rgb(image: Any) -> Any:
     return image
 
 
-def recognize(image: Any, db_path: str | Path) -> str:
+def recognize(
+    image: Any,
+    db_path: str | Path,
+    *,
+    liveness_checker: LivenessChecker | None = None,
+    require_liveness: bool = True,
+    tolerance: float = 0.6,
+) -> str:
     path = Path(db_path)
     registry_path = path if path.suffix.lower() == ".json" else path / "registry.json"
     registry = FaceRegistry(registry_path)
     backend = DefaultFaceRecognitionBackend()
-    service = FaceRecognitionService(registry, backend, backend.distance, tolerance=0.6)
-    result = service.authenticate(_to_rgb(image), LivenessPolicy())
+    service = FaceRecognitionService(registry, backend, backend.distance, tolerance=tolerance)
+    result = service.authenticate(
+        _to_rgb(image),
+        LivenessPolicy(liveness_checker, required=require_liveness),
+    )
     if result.status is RecognitionStatus.MATCH and result.name is not None:
         return result.name
     if result.status is RecognitionStatus.NO_FACE:

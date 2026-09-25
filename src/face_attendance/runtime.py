@@ -27,6 +27,7 @@ def build_runtime(
     )
     registry.ensure_exists()
     attendance = AttendanceLog(config.attendance_path)
+    attendance.ensure_exists()
     service = FaceRecognitionService(
         registry=registry,
         encoder=backend,

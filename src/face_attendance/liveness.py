@@ -37,7 +37,9 @@ class CallableLivenessChecker:
 
 
 class LivenessPolicy:
-    def __init__(self, checker: LivenessChecker | None = None, required: bool = False) -> None:
+    def __init__(self, checker: LivenessChecker | None = None, required: bool = True) -> None:
+        if not isinstance(required, bool):
+            raise LivenessError("Liveness requirement must be a boolean")
         self.checker = checker
         self.required = required
 

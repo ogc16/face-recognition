@@ -27,10 +27,16 @@ def normalize_name(value: str) -> str:
     return name
 
 
+def name_key(value: str) -> str:
+    return normalize_name(value).casefold()
+
+
 def validate_embedding(values: Iterable[Any]) -> tuple[float, ...]:
+    if isinstance(values, (str, bytes, bytearray)):
+        raise RegistryError("Embedding must be a sequence of numbers")
     try:
         embedding = tuple(float(value) for value in values)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise RegistryError("Embedding must contain numbers") from exc
 
     if not embedding:

@@ -97,8 +97,11 @@ class FaceAttendanceApp:
         self._registration_frame: Any | None = None
         self._registration_name: tk.StringVar | None = None
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="face-attendance")
+        self.remove_button: ttk.Button | None = None
+        self._users_listbox: tk.Listbox | None = None
         self._configure_window()
         self._build_widgets()
+        self._refresh_users()
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self._schedule_frame(0)
         self._schedule_task_poll()
@@ -141,7 +144,22 @@ class FaceAttendanceApp:
         self.register_button = ttk.Button(
             controls, text="Register user", command=self._open_registration
         )
-        self.register_button.pack(fill="x", pady=(0, 24))
+        self.register_button.pack(fill="x", pady=(0, 20))
+        ttk.Label(controls, text="Registered users").pack(anchor="w")
+        self._users_listbox = tk.Listbox(
+            controls,
+            height=6,
+            selectmode=tk.BROWSE,
+            exportselection=False,
+            activestyle="none",
+        )
+        self._users_listbox.pack(fill="x", pady=(4, 8))
+        self.remove_button = ttk.Button(
+            controls,
+            text="Remove selected user",
+            command=self._remove_selected_user,
+        )
+        self.remove_button.pack(fill="x", pady=(0, 20))
         self.status_var = tk.StringVar(value="Starting camera…")
         ttk.Label(
             controls,
@@ -167,25 +185,33 @@ class FaceAttendanceApp:
         )
 
     def _schedule_frame(self, delay: int) -> None:
-        if not self._closed:
+        if self._closed:
+            return
+        try:
             self._after_id = self.root.after(delay, self._process_webcam)
+        except tk.TclError:
+            self._after_id = None
 
     def _process_webcam(self) -> None:
         if self._closed:
             return
+        delay = 30
         try:
             success, frame = self.camera.read()
             if not success or frame is None:
                 self.status_var.set("Waiting for camera frame…")
-                self._schedule_frame(100)
+                delay = 100
                 return
             self._latest_frame = frame
             self._show_frame(self.video_label, frame)
         except FaceAttendanceError as exc:
             self.status_var.set(str(exc))
-            self._schedule_frame(250)
-            return
-        self._schedule_frame(30)
+            delay = 250
+        except Exception:
+            self.status_var.set("Camera processing failed")
+            delay = 500
+        finally:
+            self._schedule_frame(delay)
 
     def _show_frame(self, label: ttk.Label, frame: Any) -> None:
         cv2 = _CV2
@@ -240,12 +266,16 @@ class FaceAttendanceApp:
         if not result.matched or result.name is None or event is None:
             self._show_recognition_failure(result)
             return
-        confidence = f"{result.confidence:.0%}" if result.confidence is not None else "confirmed"
+        quality = (
+            f"{result.match_quality:.0%} match quality"
+            if result.match_quality is not None
+            else "confirmed"
+        )
         action = "signed in" if event.action == "in" else "signed out"
         self.status_var.set(f"{result.name} {action}")
         messagebox.showinfo(
             "Face recognized",
-            f"{result.name} {action} with {confidence} confidence.",
+            f"{result.name} {action} with {quality}.",
         )
 
     def _show_recognition_failure(self, result: RecognitionResult) -> None:
@@ -259,6 +289,45 @@ class FaceAttendanceApp:
         message = messages.get(result.status, "Face recognition failed. Try again.")
         self.status_var.set("Recognition failed")
         messagebox.showwarning("Face not recognized", message)
+
+    def _refresh_users(self) -> None:
+        if self._users_listbox is None:
+            return
+        try:
+            names = self.runtime.registry.names()
+        except FaceAttendanceError:
+            self.status_var.set("Unable to load registered users")
+            return
+        self._users_listbox.delete(0, tk.END)
+        for name in names:
+            self._users_listbox.insert(tk.END, name)
+
+    def _remove_selected_user(self) -> None:
+        if self._busy or self._users_listbox is None:
+            return
+        selection = self._users_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("No user selected", "Select a user to remove.")
+            return
+        name = self._users_listbox.get(selection[0])
+        if not messagebox.askyesno(
+            "Remove user",
+            f"Remove the registered face data for {name}?",
+        ):
+            return
+        self._set_busy(True)
+        self._submit(
+            lambda: (self.runtime.registry.remove(name), name),
+            self._removal_finished,
+        )
+
+    def _removal_finished(self, value: Any) -> None:
+        removed, name = value
+        self._refresh_users()
+        if removed:
+            self.status_var.set(f"Removed {name}")
+        else:
+            self.status_var.set(f"{name} was not registered")
 
     def _open_registration(self) -> None:
         if self._busy:
@@ -347,27 +416,40 @@ class FaceAttendanceApp:
             self.status_var.set(f"Registered {name}")
         else:
             messagebox.showinfo("Already registered", "That face sample is already registered.")
+        self._refresh_users()
         self._close_registration()
 
     def _submit(self, task: Callable[[], Any], on_success: Callable[[Any], None]) -> None:
-        future = self._executor.submit(task)
+        try:
+            future = self._executor.submit(task)
+        except Exception as exc:
+            self._task_failed(exc)
+            return
         future.add_done_callback(
             lambda completed_future: self._task_results.put((completed_future, on_success))
         )
 
     def _schedule_task_poll(self) -> None:
-        if not self._closed:
+        if self._closed:
+            return
+        try:
             self._task_poll_id = self.root.after(50, self._drain_tasks)
+        except tk.TclError:
+            self._task_poll_id = None
 
     def _drain_tasks(self) -> None:
         self._task_poll_id = None
-        while True:
-            try:
-                future, on_success = self._task_results.get_nowait()
-            except queue.Empty:
-                break
-            self._complete_task(future, on_success)
-        if not self._closed:
+        try:
+            while True:
+                try:
+                    future, on_success = self._task_results.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    self._complete_task(future, on_success)
+                except Exception as exc:
+                    self._task_failed(exc)
+        finally:
             self._schedule_task_poll()
 
     def _complete_task(self, future: Future[Any], on_success: Callable[[Any], None]) -> None:
@@ -382,18 +464,24 @@ class FaceAttendanceApp:
         on_success(value)
 
     def _task_failed(self, exc: Exception) -> None:
+        self._set_busy(False)
         self.status_var.set("Action failed")
         window = self._registration_window
-        if window is not None:
-            messagebox.showerror("Action failed", str(exc), parent=window)
-        else:
-            messagebox.showerror("Action failed", str(exc))
+        try:
+            if window is not None:
+                messagebox.showerror("Action failed", str(exc), parent=window)
+            else:
+                messagebox.showerror("Action failed", str(exc))
+        except tk.TclError:
+            pass
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
         state = "disabled" if busy else "normal"
         for button in (self.login_button, self.logout_button, self.register_button):
             button.configure(state=state)
+        if self.remove_button is not None:
+            self.remove_button.configure(state=state)
         if self.registration_accept_button is not None:
             self.registration_accept_button.configure(state=state)
 

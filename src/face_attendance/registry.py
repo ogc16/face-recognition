@@ -10,10 +10,11 @@ from threading import RLock
 
 from .errors import RegistryError
 from .file_lock import exclusive_file_lock
-from .validation import normalize_name, validate_embedding
+from .validation import name_key, normalize_name, validate_embedding
 
 REGISTRY_VERSION = 1
 Embedding = tuple[float, ...]
+FileSignature = tuple[int, int, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +40,8 @@ class FaceRegistry:
         self.path = Path(path)
         self.max_embeddings_per_user = max_embeddings_per_user
         self._lock = RLock()
+        self._cached_users: dict[str, UserRecord] | None = None
+        self._cached_signature: FileSignature | None = None
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
@@ -53,16 +56,21 @@ class FaceRegistry:
         normalized_embedding = validate_embedding(embedding)
         with self._locked():
             users = self._load()
-            existing = users.get(normalized_name)
+            key = name_key(normalized_name)
+            existing = users.get(key)
             if existing is not None and normalized_embedding in existing.embeddings:
                 return False
+            if any(
+                normalized_embedding in record.embeddings
+                for other_key, record in users.items()
+                if other_key != key
+            ):
+                raise RegistryError("Face sample is already registered to another user")
             if existing is None:
-                users[normalized_name] = UserRecord(
-                    name=normalized_name, embeddings=(normalized_embedding,)
-                )
+                users[key] = UserRecord(name=normalized_name, embeddings=(normalized_embedding,))
             elif len(existing.embeddings) < self.max_embeddings_per_user:
-                users[normalized_name] = UserRecord(
-                    name=normalized_name,
+                users[key] = UserRecord(
+                    name=existing.name,
                     embeddings=(*existing.embeddings, normalized_embedding),
                 )
             else:
@@ -74,31 +82,35 @@ class FaceRegistry:
         normalized_name = normalize_name(name)
         with self._locked():
             users = self._load()
-            if normalized_name not in users:
+            key = name_key(normalized_name)
+            if key not in users:
                 return False
-            del users[normalized_name]
+            del users[key]
             self._save(users)
             return True
 
     def get(self, name: str) -> UserRecord | None:
         normalized_name = normalize_name(name)
         with self._locked():
-            return self._load().get(normalized_name)
+            return self._load().get(name_key(normalized_name))
 
     def names(self) -> tuple[str, ...]:
         with self._locked():
-            return tuple(sorted(self._load()))
+            users = self._load()
+            return tuple(sorted((record.name for record in users.values()), key=name_key))
 
     def records(self) -> tuple[UserRecord, ...]:
         with self._locked():
             users = self._load()
-            return tuple(users[name] for name in sorted(users))
+            return tuple(users[key] for key in sorted(users))
 
     def iter_embeddings(self) -> Iterator[tuple[str, Embedding]]:
         with self._locked():
             users = self._load()
             snapshots = tuple(
-                (name, embedding) for name in sorted(users) for embedding in users[name].embeddings
+                (users[key].name, embedding)
+                for key in sorted(users)
+                for embedding in users[key].embeddings
             )
         yield from snapshots
 
@@ -114,13 +126,23 @@ class FaceRegistry:
             return len(self._load())
 
     def _load(self) -> dict[str, UserRecord]:
+        signature = self._file_signature()
+        if self._cached_users is not None and signature == self._cached_signature:
+            return dict(self._cached_users)
+        users = self._read()
+        self._cached_users = users
+        self._cached_signature = signature
+        return dict(users)
+
+    def _read(self) -> dict[str, UserRecord]:
         if not self.path.exists():
             return {}
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise RegistryError(f"Unable to read registry: {self.path}") from exc
-        if not isinstance(payload, dict) or payload.get("version") != REGISTRY_VERSION:
+        version = payload.get("version") if isinstance(payload, dict) else None
+        if type(version) is not int or version != REGISTRY_VERSION:
             raise RegistryError("Unsupported registry format")
         if set(payload) != {"version", "users"}:
             raise RegistryError("Registry contains unsupported fields")
@@ -128,6 +150,7 @@ class FaceRegistry:
         if not isinstance(raw_users, list):
             raise RegistryError("Registry users must be a list")
         users: dict[str, UserRecord] = {}
+        seen_embeddings: dict[Embedding, str] = {}
         for raw_user in raw_users:
             if not isinstance(raw_user, dict) or set(raw_user) != {"name", "embeddings"}:
                 raise RegistryError("Registry user data is invalid")
@@ -136,7 +159,8 @@ class FaceRegistry:
             if not isinstance(raw_name, str) or not isinstance(raw_embeddings, list):
                 raise RegistryError("Registry user data is invalid")
             name = normalize_name(raw_name)
-            if name in users:
+            key = name_key(name)
+            if key in users:
                 raise RegistryError(f"Duplicate registry user: {name}")
             embeddings = tuple(validate_embedding(embedding) for embedding in raw_embeddings)
             if not embeddings:
@@ -144,8 +168,24 @@ class FaceRegistry:
             dimensions = {len(embedding) for embedding in embeddings}
             if len(dimensions) != 1:
                 raise RegistryError(f"Inconsistent embeddings for {name}")
-            users[name] = UserRecord(name=name, embeddings=embeddings)
+            for embedding in embeddings:
+                previous_name = seen_embeddings.get(embedding)
+                if previous_name is not None:
+                    raise RegistryError(
+                        f"Embedding is registered for both {previous_name} and {name}"
+                    )
+                seen_embeddings[embedding] = name
+            users[key] = UserRecord(name=name, embeddings=embeddings)
         return users
+
+    def _file_signature(self) -> FileSignature | None:
+        try:
+            stat = self.path.stat()
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise RegistryError(f"Unable to inspect registry: {self.path}") from exc
+        return (stat.st_mtime_ns, stat.st_size, getattr(stat, "st_ino", 0))
 
     def _save(self, users: dict[str, UserRecord]) -> None:
         payload = {
@@ -174,8 +214,12 @@ class FaceRegistry:
                 file_handle.write("\n")
                 file_handle.flush()
                 os.fsync(file_handle.fileno())
+            with contextlib.suppress(OSError):
+                os.chmod(temporary_path, 0o600)
             os.replace(temporary_path, self.path)
             temporary_path = None
+            self._cached_users = dict(users)
+            self._cached_signature = self._file_signature()
         except OSError as exc:
             raise RegistryError(f"Unable to write registry: {self.path}") from exc
         finally:

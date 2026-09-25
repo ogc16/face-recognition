@@ -26,7 +26,7 @@ class AppConfig:
     registry_path: Path = Path("data/registry.json")
     attendance_path: Path = Path("data/attendance.csv")
     tolerance: float = 0.6
-    require_liveness: bool = False
+    require_liveness: bool = True
     max_embeddings_per_user: int = 5
     window_width: int = 1200
     window_height: int = 720
@@ -39,6 +39,10 @@ class AppConfig:
         )
         _validate_integer("window_width", self.window_width, minimum=800)
         _validate_integer("window_height", self.window_height, minimum=600)
+        if not isinstance(self.require_liveness, bool):
+            raise ConfigurationError("require_liveness must be a boolean")
+        if not isinstance(self.registry_path, Path) or not isinstance(self.attendance_path, Path):
+            raise ConfigurationError("Data paths must be Path objects")
         if _paths_refer_to_same_file(self.registry_path, self.attendance_path):
             raise ConfigurationError("Registry and attendance paths must be different")
 
@@ -67,7 +71,7 @@ class AppConfig:
                 raise ConfigurationError(f"Configuration file not found: {config_path}")
             try:
                 loaded = json.loads(config_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
                 raise ConfigurationError(f"Unable to read configuration: {config_path}") from exc
             if not isinstance(loaded, dict):
                 raise ConfigurationError("Configuration must be a JSON object")
@@ -149,10 +153,19 @@ def _parse_boolean(value: Any, name: str) -> bool:
 def _parse_integer(value: Any, name: str, minimum: int, maximum: int | None = None) -> int:
     if isinstance(value, bool):
         raise ConfigurationError(f"{name} must be an integer")
-    try:
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, float):
+        if not value.is_integer():
+            raise ConfigurationError(f"{name} must be an integer")
         parsed = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ConfigurationError(f"{name} must be an integer") from exc
+    elif isinstance(value, str):
+        try:
+            parsed = int(value.strip(), 10)
+        except ValueError as exc:
+            raise ConfigurationError(f"{name} must be an integer") from exc
+    else:
+        raise ConfigurationError(f"{name} must be an integer")
     if parsed < minimum or (maximum is not None and parsed > maximum):
         bounds = (
             f"between {minimum} and {maximum}" if maximum is not None else f"at least {minimum}"
@@ -166,7 +179,7 @@ def _parse_number(value: Any, name: str, minimum: float, maximum: float | None =
         raise ConfigurationError(f"{name} must be a number")
     try:
         parsed = float(value)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise ConfigurationError(f"{name} must be a number") from exc
     if not math.isfinite(parsed):
         raise ConfigurationError(f"{name} must be a finite number")
@@ -194,8 +207,26 @@ def _paths_refer_to_same_file(first: Path, second: Path) -> bool:
 
 
 def _validate_integer(name: str, value: int, minimum: int, maximum: int | None = None) -> None:
-    _parse_integer(value, name, minimum, maximum)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigurationError(f"{name} must be an integer")
+    if value < minimum or (maximum is not None and value > maximum):
+        bounds = (
+            f"between {minimum} and {maximum}" if maximum is not None else f"at least {minimum}"
+        )
+        raise ConfigurationError(f"{name} must be {bounds}")
 
 
 def _validate_number(name: str, value: float, minimum: float, maximum: float | None = None) -> None:
-    _parse_number(value, name, minimum, maximum)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigurationError(f"{name} must be a number")
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ConfigurationError(f"{name} must be a finite number") from exc
+    if not math.isfinite(numeric_value):
+        raise ConfigurationError(f"{name} must be a finite number")
+    if numeric_value < minimum or (maximum is not None and numeric_value > maximum):
+        bounds = (
+            f"between {minimum} and {maximum}" if maximum is not None else f"at least {minimum}"
+        )
+        raise ConfigurationError(f"{name} must be {bounds}")

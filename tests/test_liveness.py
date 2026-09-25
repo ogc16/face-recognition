@@ -39,3 +39,8 @@ def test_checker_errors_are_wrapped():
 
     with pytest.raises(LivenessError):
         LivenessPolicy(BrokenChecker(), required=False).evaluate(object())
+
+
+def test_policy_rejects_non_boolean_requirement():
+    with pytest.raises(LivenessError):
+        LivenessPolicy(required="yes")

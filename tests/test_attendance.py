@@ -30,6 +30,8 @@ def test_attendance_rejects_invalid_actions(tmp_path):
 
     with pytest.raises(AttendanceError):
         log.record("Ada", "break")
+    with pytest.raises(AttendanceError):
+        log.record("Ada", ["in"])
 
 
 def test_attendance_rejects_invalid_headers(tmp_path):
@@ -55,6 +57,57 @@ def test_attendance_rejects_corrupt_rows(tmp_path):
     path = tmp_path / "attendance.csv"
     path.write_text(
         "timestamp,name,action\nnot-a-time,Ada,in\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AttendanceError):
+        AttendanceLog(path).events()
+
+
+def test_attendance_matches_names_case_insensitively(tmp_path):
+    log = AttendanceLog(tmp_path / "attendance.csv")
+
+    log.record("Ada", "in")
+    log.record("ADA", "out")
+
+    assert log.latest_action("ada") == "out"
+    assert [event.name for event in log.events()] == ["Ada", "ADA"]
+
+
+def test_attendance_reuses_cached_events_for_appends(tmp_path, monkeypatch):
+    log = AttendanceLog(tmp_path / "attendance.csv")
+    original = log._read_events_unlocked
+    calls = 0
+
+    def counted_read():
+        nonlocal calls
+        calls += 1
+        return original()
+
+    monkeypatch.setattr(log, "_read_events_unlocked", counted_read)
+
+    log.record("Ada", "in")
+    log.record("Ada", "out")
+    log.events()
+
+    assert calls == 1
+
+
+def test_attendance_refreshes_cache_after_external_change(tmp_path):
+    path = tmp_path / "attendance.csv"
+    log = AttendanceLog(path)
+    log.record("Ada", "in")
+
+    with path.open("a", encoding="utf-8", newline="") as handle:
+        handle.write("2026-01-02T05:00:00+00:00,Ada,out\n")
+
+    assert log.latest_action("Ada") == "out"
+
+
+def test_attendance_rejects_invalid_historical_transition(tmp_path):
+    path = tmp_path / "attendance.csv"
+    path.write_text(
+        "timestamp,name,action\n2026-01-02T03:04:00+00:00,Ada,out\n",
         encoding="utf-8",
     )
 

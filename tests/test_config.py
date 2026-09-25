@@ -59,6 +59,30 @@ def test_config_rejects_unknown_environment_keys(tmp_path):
         )
 
 
+def test_config_defaults_to_required_liveness():
+    assert AppConfig().require_liveness is True
+
+
 def test_config_rejects_non_finite_tolerance():
     with pytest.raises(ConfigurationError):
         AppConfig(tolerance=float("nan"))
+
+
+def test_config_rejects_unrepresentable_tolerance():
+    with pytest.raises(ConfigurationError):
+        AppConfig(tolerance=10**10000)
+
+
+def test_config_rejects_fractional_direct_integer_values():
+    with pytest.raises(ConfigurationError):
+        AppConfig(camera_index=1.5)
+
+
+def test_config_rejects_non_path_data_values(tmp_path):
+    with pytest.raises(ConfigurationError):
+        AppConfig(registry_path="registry.json", attendance_path=tmp_path / "attendance.csv")
+
+
+def test_config_rejects_non_boolean_liveness_setting():
+    with pytest.raises(ConfigurationError):
+        AppConfig(require_liveness="false")
