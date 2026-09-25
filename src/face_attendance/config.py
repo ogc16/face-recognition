@@ -17,7 +17,11 @@ ENVIRONMENT_KEYS = {
     "max_embeddings_per_user": "FACE_ATTENDANCE_MAX_EMBEDDINGS",
     "window_width": "FACE_ATTENDANCE_WINDOW_WIDTH",
     "window_height": "FACE_ATTENDANCE_WINDOW_HEIGHT",
+    "storage_backend": "FACE_ATTENDANCE_STORAGE_BACKEND",
+    "postgres_dsn": "FACE_ATTENDANCE_POSTGRES_DSN",
 }
+
+STORAGE_BACKENDS = ("json", "csv", "sqlite", "postgres")
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +34,8 @@ class AppConfig:
     max_embeddings_per_user: int = 5
     window_width: int = 1200
     window_height: int = 720
+    storage_backend: str = "json"
+    postgres_dsn: str | None = None
 
     def __post_init__(self) -> None:
         _validate_integer("camera_index", self.camera_index, minimum=0)
@@ -45,6 +51,9 @@ class AppConfig:
             raise ConfigurationError("Data paths must be Path objects")
         if _paths_refer_to_same_file(self.registry_path, self.attendance_path):
             raise ConfigurationError("Registry and attendance paths must be different")
+        _validate_storage_backend(self.storage_backend)
+        if self.storage_backend == "postgres" and not self.postgres_dsn:
+            raise ConfigurationError("postgres_dsn is required when storage_backend is 'postgres'")
 
     @classmethod
     def from_file(
@@ -128,6 +137,14 @@ class AppConfig:
             window_height=_parse_integer(
                 get_value("window_height", defaults.window_height), "window_height", minimum=600
             ),
+            storage_backend=_parse_choice(
+                get_value("storage_backend", defaults.storage_backend),
+                "storage_backend",
+                STORAGE_BACKENDS,
+            ),
+            postgres_dsn=_parse_optional_string(
+                get_value("postgres_dsn", defaults.postgres_dsn), "postgres_dsn"
+            ),
         )
 
 
@@ -136,6 +153,47 @@ def _resolve_path(value: Any, base_directory: Path, name: str) -> Path:
         raise ConfigurationError(f"{name} must be a non-empty path")
     path = Path(value).expanduser()
     return path if path.is_absolute() else base_directory / path
+
+
+def _validate_storage_backend(value: str) -> str:
+    """Return the normalized backend name, or raise if unsupported.
+
+    Args:
+        value: The configured backend name.
+
+    Returns:
+        The lowercased, stripped backend name.
+
+    Raises:
+        ConfigurationError: If the name is not a supported backend.
+    """
+    if not isinstance(value, str):
+        raise ConfigurationError("storage_backend must be a string")
+    normalized = value.strip().lower()
+    if normalized not in STORAGE_BACKENDS:
+        supported = ", ".join(STORAGE_BACKENDS)
+        raise ConfigurationError(f"storage_backend must be one of: {supported}")
+    return normalized
+
+
+def _parse_choice(value: Any, name: str, allowed: tuple[str, ...]) -> str:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in allowed:
+            return normalized
+    supported = ", ".join(allowed)
+    raise ConfigurationError(f"{name} must be one of: {supported}")
+
+
+def _parse_optional_string(value: Any, name: str) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            raise ConfigurationError(f"{name} must not be empty when set")
+        return stripped
+    raise ConfigurationError(f"{name} must be a string")
 
 
 def _parse_boolean(value: Any, name: str) -> bool:
