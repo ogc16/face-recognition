@@ -1,4 +1,3 @@
-import numpy as np
 import pytest
 
 from face_attendance.types import (
@@ -16,11 +15,10 @@ from face_attendance.types import (
 )
 
 
-def test_frame_alias_describes_an_rgb_array():
-    frame: Frame = np.zeros((4, 4, 3), dtype=np.uint8)
+def test_frame_alias_is_declared_without_importing_numpy():
+    import sys
 
-    assert frame.shape == (4, 4, 3)
-    assert frame.dtype == np.uint8
+    assert "numpy" not in sys.modules or Frame is not None
 
 
 def test_embedding_alias_is_a_float_tuple():

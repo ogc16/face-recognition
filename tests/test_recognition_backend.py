@@ -69,7 +69,13 @@ def test_default_backend_reports_missing_dependencies(monkeypatch):
         DefaultFaceRecognitionBackend()
 
 
+def requires_numpy():
+    """Skip a test that needs NumPy, which the core job does not install."""
+    pytest.importorskip("numpy")
+
+
 def test_default_backend_encodes_faces(monkeypatch):
+    requires_numpy()
     install_stub(monkeypatch, "face_recognition_models", types.ModuleType("stub"))
     stub_recognition_module(monkeypatch, encodings=[[0.1, 0.2], [0.3, 0.4]])
     backend = DefaultFaceRecognitionBackend()
@@ -80,6 +86,7 @@ def test_default_backend_encodes_faces(monkeypatch):
 
 
 def test_default_backend_wraps_an_encode_failure(monkeypatch):
+    requires_numpy()
     install_stub(monkeypatch, "face_recognition_models", types.ModuleType("stub"))
     stub_recognition_module(monkeypatch, encode_error=ZeroDivisionError())
     backend = DefaultFaceRecognitionBackend()
@@ -89,6 +96,7 @@ def test_default_backend_wraps_an_encode_failure(monkeypatch):
 
 
 def test_default_backend_reports_an_invalid_encoding(monkeypatch):
+    requires_numpy()
     install_stub(monkeypatch, "face_recognition_models", types.ModuleType("stub"))
     stub_recognition_module(monkeypatch, encode_error=ValueError("bad pixels"))
     backend = DefaultFaceRecognitionBackend()
@@ -98,6 +106,7 @@ def test_default_backend_reports_an_invalid_encoding(monkeypatch):
 
 
 def test_default_backend_rejects_invalid_encodings(monkeypatch):
+    requires_numpy()
     install_stub(monkeypatch, "face_recognition_models", types.ModuleType("stub"))
     stub_recognition_module(monkeypatch, encodings=[[0.1, float("nan")]])
     backend = DefaultFaceRecognitionBackend()
@@ -107,6 +116,7 @@ def test_default_backend_rejects_invalid_encodings(monkeypatch):
 
 
 def test_default_backend_computes_a_distance(monkeypatch):
+    requires_numpy()
     install_stub(monkeypatch, "face_recognition_models", types.ModuleType("stub"))
     stub_recognition_module(monkeypatch, distance=0.42)
     backend = DefaultFaceRecognitionBackend()
@@ -115,6 +125,7 @@ def test_default_backend_computes_a_distance(monkeypatch):
 
 
 def test_default_backend_wraps_a_distance_failure(monkeypatch):
+    requires_numpy()
     install_stub(monkeypatch, "face_recognition_models", types.ModuleType("stub"))
     module = stub_recognition_module(monkeypatch)
 
@@ -137,6 +148,7 @@ def test_normalize_name_applies_nfkc():
 
     assert normalize_name(fullwidth) == "Ada"
     assert fullwidth != "Ada"
+
 
 def test_normalize_name_rejects_non_text():
     with pytest.raises(RegistryError, match="must be text"):

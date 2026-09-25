@@ -65,7 +65,6 @@ class FaceRecognitionBackend:
         raise NotImplementedError
 
 
-
 class DefaultFaceRecognitionBackend:
     def __init__(self) -> None:
         try:

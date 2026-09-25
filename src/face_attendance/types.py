@@ -11,10 +11,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Literal, TypeAlias
+from typing import TYPE_CHECKING, Literal, TypeAlias
 
-import numpy as np
-from numpy.typing import NDArray
+if TYPE_CHECKING:
+    import numpy as np
+    from numpy.typing import NDArray
+
+    #: A captured camera frame as an 8-bit, three-channel RGB image array.
+    #:
+    #: Frames cross several third-party boundaries (OpenCV, Pillow, dlib).
+    #: Those boundaries are the only place where a value changes
+    #: representation, and they are annotated with :func:`typing.cast` rather
+    #: than widened to :data:`typing.Any`.
+    Frame: TypeAlias = NDArray[np.uint8]
+else:
+    Frame: TypeAlias = object
 
 __all__ = [
     "VALID_ACTIONS",
@@ -36,14 +47,6 @@ __all__ = [
 #: deliberately stays dimension-agnostic so alternative encoders can be
 #: substituted.
 Embedding: TypeAlias = tuple[float, ...]
-
-#: A captured camera frame as an 8-bit, three-channel RGB image array.
-#:
-#: Frames cross several third-party boundaries (OpenCV, Pillow, dlib). Those
-#: boundaries are the only place where a value changes representation, and they
-#: are annotated with :func:`typing.cast` rather than widened to
-#: :data:`typing.Any`.
-Frame: TypeAlias = NDArray[np.uint8]
 
 #: The two attendance transitions the application permits.
 AttendanceAction: TypeAlias = Literal["in", "out"]

@@ -175,9 +175,7 @@ class OpenCVCameraFactory:
             DependencyError: If OpenCV is not installed.
         """
         index = (
-            self.camera_index_override
-            if self.camera_index_override is not None
-            else camera_index
+            self.camera_index_override if self.camera_index_override is not None else camera_index
         )
         return OpenCVCamera(index)
 

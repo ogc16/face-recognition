@@ -167,9 +167,7 @@ def test_print_attendance_reports_an_empty_log(capsys):
 
 
 def test_print_attendance_prints_tab_separated_rows(capsys):
-    event = AttendanceEvent(
-        timestamp="2026-09-25T09:00:00+00:00", name="Ada", action="in"
-    )
+    event = AttendanceEvent(timestamp="2026-09-25T09:00:00+00:00", name="Ada", action="in")
 
     cli._print_attendance((event,))
 

@@ -24,9 +24,7 @@ _FRAME = object()
 
 class StubService:
     def __init__(self, result=None, embedding=(0.1, 0.2)):
-        self.result = result or RecognitionResult(
-            status=RecognitionStatus.UNKNOWN, face_count=1
-        )
+        self.result = result or RecognitionResult(status=RecognitionStatus.UNKNOWN, face_count=1)
         self.embedding = embedding
         self.authenticate_calls = 0
         self.embedding_calls = 0
@@ -880,9 +878,7 @@ def test_run_gui_returns_zero_on_success(monkeypatch, tmp_path):
     monkeypatch.setattr("face_attendance.gui.build_runtime", lambda config: None)
     monkeypatch.setattr("face_attendance.gui.FaceAttendanceApp", lambda runtime: StubApp())
 
-    result = gui.run_gui(
-        AppConfig(registry_path=tmp_path / "r", attendance_path=tmp_path / "a")
-    )
+    result = gui.run_gui(AppConfig(registry_path=tmp_path / "r", attendance_path=tmp_path / "a"))
 
     assert result == 0
 
